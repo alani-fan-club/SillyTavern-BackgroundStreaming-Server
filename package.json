@@ -1,0 +1,30 @@
+{
+  "name": "sillytavern-backgroundstreaming-server",
+  "version": "0.1.0",
+  "description": "SillyTavern server plugin that buffers streaming generations so a suspended browser tab does not abort them",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node test/relay-test.mjs",
+    "test:control": "node test/control-test.mjs",
+    "test:shim": "node test/shim-test.mjs",
+    "upstream": "node test/fake-upstream.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alani-fan-club/SillyTavern-BackgroundStreaming-Server.git"
+  },
+  "keywords": [
+    "sillytavern",
+    "sillytavern-plugin",
+    "streaming"
+  ],
+  "author": "Dong Duong",
+  "license": "AGPL-3.0-or-later",
+  "bugs": {
+    "url": "https://github.com/alani-fan-club/SillyTavern-BackgroundStreaming-Server/issues"
+  },
+  "homepage": "https://github.com/alani-fan-club/SillyTavern-BackgroundStreaming-Server#readme",
+  "dependencies": {},
+  "devDependencies": {}
+}
