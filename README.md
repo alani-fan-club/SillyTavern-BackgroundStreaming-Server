@@ -124,6 +124,14 @@ the plugin, which never goes away, so nothing gets aborted. Response bytes are
 buffered and replayed to as many successive client connections as you like,
 resumable by byte offset.
 
+That inner hop always goes to loopback, never to whatever address your request
+arrived on, because it passes through ST's whitelist a second time. Users
+whitelist the addresses their clients connect from, not the ones their server
+answers on, so dialing the arrival address works over localhost and the LAN and
+then fails on a VPN or overlay network. Loopback is the one address ST puts in
+the whitelist itself. If it is ever refused anyway, the plugin retries via the
+arrival address before giving up.
+
 ```
 browser  ──(dies and reconnects freely)──►  relay  ──(never dies)──►  ST endpoint  ──►  provider
 ```
@@ -132,6 +140,12 @@ The plugin knows nothing about any LLM provider. The payload and the response bo
 are opaque bytes to it, and the extension's only integration point is
 `globalThis.fetch`. That is why the pair keeps working across SillyTavern updates
 instead of breaking every time an API shape changes.
+
+It is also why turning streaming off in SillyTavern changes nothing here. The bug
+is not about streaming: ST registers its abort-on-disconnect handler before it
+branches on `stream`, so a non-streaming generation dies on a dropped socket just
+the same, and loses the entire reply rather than the tail of one. The relay
+buffers a single JSON body exactly as it buffers an event stream.
 
 ### Telling "Stop" apart from "suspended"
 
@@ -197,10 +211,16 @@ interesting assertions get made.
 node test/fake-upstream.mjs &                  # fake provider on :9911
 node ../../server.js --port 7788 &             # ST with the plugin loaded
 
+node test/loopback-test.mjs                    # inner-hop address choice, no server needed
 node test/control-test.mjs                     # negative control: reproduces the bug
 node test/relay-test.mjs                       # server plugin, end to end
 node test/shim-test.mjs                        # UI extension, end to end
+node test/nonstreaming-test.mjs                # the same, with streaming turned off
 ```
+
+Point `ST_BASE` at a non-loopback address of the same machine to exercise the
+case that matters for remote access, where the request arrives on one address and
+the inner hop has to go somewhere else.
 
 | Variable | Default |
 |---|---|

@@ -1,6 +1,6 @@
 {
   "name": "sillytavern-backgroundstreaming-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SillyTavern server plugin that buffers streaming generations so a suspended browser tab does not abort them",
   "main": "index.js",
   "type": "commonjs",
@@ -8,6 +8,8 @@
     "test": "node test/relay-test.mjs",
     "test:control": "node test/control-test.mjs",
     "test:shim": "node test/shim-test.mjs",
+    "test:nonstreaming": "node test/nonstreaming-test.mjs",
+    "test:loopback": "node test/loopback-test.mjs",
     "upstream": "node test/fake-upstream.mjs"
   },
   "repository": {

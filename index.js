@@ -103,6 +103,22 @@ function isTerminal(job) {
 }
 
 /**
+ * Did the loopback hop get turned away before it reached the generation code?
+ *
+ * ST's whitelist, basic auth and login middleware all answer with an HTML error
+ * page. The generation endpoints answer with JSON or an event stream and never
+ * with HTML, so an HTML 4xx is the infrastructure talking, not the provider.
+ * Worth telling apart: a provider's own 401 is a real answer the user needs to
+ * see, while this means the relay itself is not usable in this deployment and
+ * the caller is better off generating directly.
+ */
+function isBlockedByMiddleware(job) {
+  return job.statusCode >= 400
+    && job.statusCode < 500
+    && String(job.contentType).toLowerCase().includes("text/html");
+}
+
+/**
  * The user a job belongs to. Plugin routers mount after ST's session and
  * requireLogin middleware, so this is populated for every request that gets
  * here; the `?? null` is only for exotic configurations.
@@ -179,18 +195,40 @@ function buildForwardHeaders(request, bodyLength) {
   return headers;
 }
 
+/** Connection-level failures worth retrying against the next candidate host. */
+const CONNECT_ERRORS = new Set([
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EADDRNOTAVAIL",
+  "ETIMEDOUT",
+]);
+
 /**
- * The address to make the loopback call to.
+ * Addresses to try for the loopback call, best first.
  *
- * Not a hardcoded 127.0.0.1: SillyTavern can be configured IPv6-only
- * (`protocol.ipv4: false`), or bound to one specific `listenAddress`, and in
- * either case 127.0.0.1 is not listening at all. The address this very request
- * arrived on is by definition one the server is bound to.
+ * Real loopback has to come first, and not merely because it is the shortest
+ * path. ST's whitelist middleware re-checks the source IP of this call, and the
+ * default whitelist is loopback only. Dialing whatever address the request
+ * happened to arrive on makes the relay present itself as a remote client, so it
+ * only works where that address is already whitelisted. It is not: users
+ * whitelist the addresses their *clients* connect from, not the ones their
+ * server answers on. Any reachable interface that is not the LAN subnet breaks,
+ * which covers VPN and overlay networks, additional NICs, and public addresses.
+ * Loopback needs no whitelist entry in any deployment.
+ *
+ * The arrival address is still worth keeping as a fallback, for the case that
+ * motivated looking at this at all: ST bound IPv6-only (`protocol.ipv4: false`)
+ * or to one specific `listenAddress`, where 127.0.0.1 is not listening.
  */
-function loopbackHost(request) {
-  const address = request.socket.localAddress || "127.0.0.1";
-  // A v4 client on a dual-stack socket is reported as ::ffff:127.0.0.1.
-  return address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+function loopbackCandidates(request) {
+  const address = request.socket.localAddress || "";
+  // A v4 peer on a dual-stack socket is reported as ::ffff:127.0.0.1.
+  const mapped = address.startsWith("::ffff:");
+  const arrival = mapped ? address.slice("::ffff:".length) : address;
+  const loopback = !mapped && request.socket.localFamily === "IPv6" ? "::1" : "127.0.0.1";
+
+  return arrival && arrival !== loopback ? [loopback, arrival] : [loopback];
 }
 
 function appendChunk(job, chunk) {
@@ -273,7 +311,10 @@ function startUpstream(job, request, bodyBuffer) {
   return new Promise((resolve, reject) => {
     const isSecure = Boolean(request.socket.encrypted);
     const transport = isSecure ? https : http;
+    const candidates = loopbackCandidates(request);
+    const headers = buildForwardHeaders(request, bodyBuffer.length);
 
+    let index = 0;
     let settled = false;
     let headersTimer = null;
 
@@ -287,34 +328,64 @@ function startUpstream(job, request, bodyBuffer) {
       finish(value);
     };
 
-    const options = {
-      host: loopbackHost(request),
-      port: request.socket.localPort,
-      path: job.target,
-      method: "POST",
-      headers: buildForwardHeaders(request, bodyBuffer.length),
-      // Loopback to ourselves. If ST is serving TLS it is very likely a
-      // self-signed cert, and there is no trust decision to make on loopback.
-      rejectUnauthorized: false,
+    const attempt = () => {
+      const host = candidates[index];
+
+      const upstream = transport.request({
+        host,
+        port: request.socket.localPort,
+        path: job.target,
+        method: "POST",
+        headers,
+        // Loopback to ourselves. If ST is serving TLS it is very likely a
+        // self-signed cert, and there is no trust decision to make on loopback.
+        rejectUnauthorized: false,
+      }, (response) => {
+        const statusCode = response.statusCode ?? 0;
+        const contentType = response.headers["content-type"] ?? "application/octet-stream";
+
+        // Turned away by ST's own middleware rather than answered. The other
+        // candidate may well be allowed where this one is not: deployments
+        // whitelist loopback, or their LAN subnet, or both, and which one is
+        // present is not knowable from here. Nothing has been buffered yet, so
+        // trying the next address cannot duplicate a generation.
+        if (!settled && isBlockedByMiddleware({ statusCode, contentType }) && index + 1 < candidates.length) {
+          console.warn(`[st-relay] ${host} was rejected with HTTP ${statusCode} by SillyTavern, retrying via ${candidates[index + 1]}`);
+          response.resume();
+          index += 1;
+          attempt();
+          return;
+        }
+
+        job.statusCode = statusCode;
+        job.contentType = contentType;
+        job.status = "running";
+
+        response.on("data", (chunk) => appendChunk(job, chunk));
+        response.on("end", () => finishJob(job, "done"));
+        response.on("aborted", () => finishJob(job, "error", "Upstream connection aborted"));
+        response.on("error", (error) => finishJob(job, "error", error.message));
+
+        settle(resolve);
+      });
+
+      upstream.on("error", (error) => {
+        // Nothing was received yet, so moving to the next candidate cannot
+        // duplicate a generation. Covers ST bound somewhere loopback is not.
+        if (!settled && CONNECT_ERRORS.has(error.code) && index + 1 < candidates.length) {
+          console.warn(`[st-relay] ${host} unreachable (${error.code}), retrying via ${candidates[index + 1]}`);
+          index += 1;
+          attempt();
+          return;
+        }
+
+        finishJob(job, "error", error.message);
+        settle(reject, error);
+      });
+
+      job.request = upstream;
+      upstream.end(bodyBuffer);
     };
-
-    const upstream = transport.request(options, (response) => {
-      job.statusCode = response.statusCode ?? 0;
-      job.contentType = response.headers["content-type"] ?? "application/octet-stream";
-      job.status = "running";
-
-      response.on("data", (chunk) => appendChunk(job, chunk));
-      response.on("end", () => finishJob(job, "done"));
-      response.on("aborted", () => finishJob(job, "error", "Upstream connection aborted"));
-      response.on("error", (error) => finishJob(job, "error", error.message));
-
-      settle(resolve);
-    });
-
-    upstream.on("error", (error) => {
-      finishJob(job, "error", error.message);
-      settle(reject, error);
-    });
 
     // Without this, an ST endpoint that never replies leaves /start pending
     // forever, and the browser's generation hangs with no path to a fallback.
@@ -326,8 +397,7 @@ function startUpstream(job, request, bodyBuffer) {
     }, UPSTREAM_HEADERS_TIMEOUT_MS);
     headersTimer.unref?.();
 
-    job.request = upstream;
-    upstream.end(bodyBuffer);
+    attempt();
   });
 }
 
@@ -430,6 +500,19 @@ async function init(router) {
       jobs.delete(job.id);
       console.error(`[st-relay] failed to start job for ${target}:`, error);
       return response.status(502).json({ error: `Relay loopback request failed: ${error.message}` });
+    }
+
+    // Report this as a relay failure rather than passing the error page on as if
+    // it were the generation's answer. The extension reads a failed /start as
+    // "relay unavailable" and sends the request directly, which costs background
+    // resumption for this message instead of failing it outright.
+    if (isBlockedByMiddleware(job)) {
+      destroyUpstream(job);
+      jobs.delete(job.id);
+      console.error(`[st-relay] loopback to ${job.target} was rejected with HTTP ${job.statusCode} by SillyTavern itself. Check that this server's own address is allowed to reach it.`);
+      return response.status(502).json({
+        error: `Relay loopback rejected with HTTP ${job.statusCode} before reaching ${job.target}`,
+      });
     }
 
     console.info(`[st-relay] job ${job.id} started (${target} -> ${job.statusCode})`);
@@ -608,3 +691,6 @@ async function exit() {
 }
 
 module.exports = { info, init, exit };
+
+/** Pure helpers whose behaviour is worth pinning down. See test/loopback-test.mjs. */
+module.exports.__test = { loopbackCandidates, isBlockedByMiddleware };
