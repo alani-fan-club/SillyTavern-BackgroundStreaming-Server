@@ -15,6 +15,16 @@ const NONSTREAM_DELAY_MS = 3000;
 
 const state = { requests: 0, aborted: 0, completed: 0, sent: 0 };
 
+/**
+ * Held back before the response headers go out, set via POST /_config.
+ *
+ * The relay resolves /start on upstream headers, so this widens the window in
+ * which a job exists on the relay but the page that asked for it has not been
+ * told its id yet. Real providers spend anything from milliseconds to a minute
+ * there; here it is normally zero.
+ */
+let headerDelayMs = 0;
+
 /** The same text either mode produces, so tests can assert on one string. */
 function fullText() {
     return Array.from({ length: CHUNKS }, (_, i) => `tok${i} `).join('');
@@ -63,7 +73,16 @@ function serveNonStreaming(res) {
 const server = http.createServer(async (req, res) => {
     if (req.url === '/_probe') {
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify(state));
+        res.end(JSON.stringify({ ...state, headerDelayMs }));
+        return;
+    }
+
+    if (req.url === '/_config') {
+        const body = await readBody(req);
+        headerDelayMs = Number(body.headerDelayMs) || 0;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ headerDelayMs }));
+        console.log(`[upstream] holding headers for ${headerDelayMs}ms`);
         return;
     }
 
@@ -82,6 +101,13 @@ const server = http.createServer(async (req, res) => {
     if (body.stream === false) {
         serveNonStreaming(res);
         return;
+    }
+
+    if (headerDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, headerDelayMs));
+        if (closedEarly) {
+            return;
+        }
     }
 
     res.writeHead(200, {

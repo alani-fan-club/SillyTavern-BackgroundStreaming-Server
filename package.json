@@ -11,6 +11,7 @@
     "test:nonstreaming": "node test/nonstreaming-test.mjs",
     "test:reload": "node test/reload-test.mjs",
     "test:duplicate": "node test/duplicate-test.mjs",
+    "test:self-adopt": "node test/self-adopt-test.mjs",
     "test:loopback": "node test/loopback-test.mjs",
     "upstream": "node test/fake-upstream.mjs"
   },

@@ -223,7 +223,13 @@ node test/shim-test.mjs                        # UI extension, end to end
 node test/nonstreaming-test.mjs                # the same, with streaming turned off
 node test/reload-test.mjs                      # page destroyed mid-generation, then reloaded
 node test/duplicate-test.mjs                   # a generation the page received is never recovered too
+node test/self-adopt-test.mjs                  # a page never adopts a job it started itself
 ```
+
+`fake-upstream.mjs` takes `POST /_config {"headerDelayMs":N}`, which holds the
+response headers back. That is the window in which a job is already registered
+here but `/start` has not yet told the caller its id, and it is as wide as the
+provider is slow — a reasoning model can sit there for tens of seconds.
 
 Point `ST_BASE` at a non-loopback address of the same machine to exercise the
 case that matters for remote access, where the request arrives on one address and
