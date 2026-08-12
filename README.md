@@ -177,6 +177,11 @@ anyone else.
 absolute byte offset, then a final `event: end`. Base64 rather than raw bytes
 keeps resume offsets exact and lets you debug the stream with `curl`.
 
+Nothing in `/stream` requires the caller to be the page that started the job,
+which is what makes recovery from a destroyed page possible: a freshly loaded
+page lists `/jobs`, finds one still running, and streams it from offset zero as
+if it had been there all along. The relay does not distinguish the two cases.
+
 ### Limits
 
 `MAX_JOB_BYTES` 16 MB, `MAX_JOBS` 64 retained, `MAX_LIVE_JOBS_PER_USER` 8 running
@@ -216,6 +221,7 @@ node test/control-test.mjs                     # negative control: reproduces th
 node test/relay-test.mjs                       # server plugin, end to end
 node test/shim-test.mjs                        # UI extension, end to end
 node test/nonstreaming-test.mjs                # the same, with streaming turned off
+node test/reload-test.mjs                      # page destroyed mid-generation, then reloaded
 ```
 
 Point `ST_BASE` at a non-loopback address of the same machine to exercise the
@@ -234,11 +240,6 @@ upstream generation dies. If it ever starts failing, upstream has fixed the bug
 and you may not need this plugin any more.
 
 ## Known limits
-
-If iOS discards the page outright instead of just backgrounding it, the in-page
-stream is gone for good. The generation still finishes on the server, and the
-extension offers you the result on reload, but that is a restore prompt rather
-than a seamless resume.
 
 Buffered jobs live in memory, so restarting SillyTavern loses them.
 

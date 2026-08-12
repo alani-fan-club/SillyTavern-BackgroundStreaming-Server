@@ -9,6 +9,7 @@
     "test:control": "node test/control-test.mjs",
     "test:shim": "node test/shim-test.mjs",
     "test:nonstreaming": "node test/nonstreaming-test.mjs",
+    "test:reload": "node test/reload-test.mjs",
     "test:loopback": "node test/loopback-test.mjs",
     "upstream": "node test/fake-upstream.mjs"
   },
