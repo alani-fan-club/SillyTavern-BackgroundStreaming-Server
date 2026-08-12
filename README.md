@@ -222,6 +222,7 @@ node test/relay-test.mjs                       # server plugin, end to end
 node test/shim-test.mjs                        # UI extension, end to end
 node test/nonstreaming-test.mjs                # the same, with streaming turned off
 node test/reload-test.mjs                      # page destroyed mid-generation, then reloaded
+node test/duplicate-test.mjs                   # a generation the page received is never recovered too
 ```
 
 Point `ST_BASE` at a non-loopback address of the same machine to exercise the
